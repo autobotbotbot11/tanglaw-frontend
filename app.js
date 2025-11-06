@@ -1,6 +1,6 @@
 // app.js - shared frontend API helpers and small utilities
 // CHANGE API_BASE if your backend is at a different host/port
-const API_BASE = "https://f32df3040836.ngrok-free.app"; // <-- adjust if needed
+const API_BASE = "https://ac37d39ffa25.ngrok-free.app"; // <-- adjust if needed
 
 // helper to do fetch + json + error handling
 async function apiFetch(path, opts = {}) {
