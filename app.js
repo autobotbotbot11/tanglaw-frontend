@@ -1,6 +1,6 @@
 // app.js - socket-enabled frontend API helpers
 // CHANGE API_BASE if your backend is at a different host/port
-const API_BASE = "http://https://0ba6d91694c2.ngrok-free.app/api"; // adjust if needed
+const API_BASE = "https://0ba6d91694c2.ngrok-free.app/api"; // adjust if needed
 const SOCKET_IO_SRC = "https://cdn.socket.io/4.7.2/socket.io.min.js"; // CDN for socket.io client
 
 // dynamically load socket.io client script
