@@ -37,7 +37,7 @@ const SocketClient = (function(){
       loadSocketIoClient(() => {
         try {
           socket = io("https://0ba6d91694c2.ngrok-free.app", {
-            path: "/socket.io/",
+            path: "/socket.io",
             transports: ["websocket", "polling"]
           });
 
