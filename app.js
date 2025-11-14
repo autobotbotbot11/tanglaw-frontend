@@ -36,7 +36,11 @@ const SocketClient = (function(){
     return new Promise((resolve, reject) => {
       loadSocketIoClient(() => {
         try {
-          socket = io("https://0ba6d91694c2.ngrok-free.app", { transports: ["websocket", "polling"] });
+          socket = io("https://0ba6d91694c2.ngrok-free.app", {
+            path: "/socket.io/",
+            transports: ["websocket", "polling"]
+          });
+
           socket.on("connect", () => {
             connected = true;
             console.log("socket connected", socket.id);
