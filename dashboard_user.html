@@ -74,8 +74,14 @@
     const apptMsg = document.getElementById('apptMsg');
 
     let selectedPerson = null; // { id, alias, role }
+    const onlineMap = {}; // { user_id: true }
 
-    // load users
+    // helper to show online dot
+    function onlineDotHTML(isOnline){
+      return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${isOnline? '#2ecc71' : '#4a5568'};margin-left:8px;"></span>`;
+    }
+
+    // load users (REST) and show online status if any
     async function loadUsers(){
       usersList.innerHTML = 'Loading...';
       try {
@@ -85,9 +91,10 @@
         usersList.innerHTML = '';
         counselorSelect.innerHTML = '<option value="">Choose counselor</option>';
         data.users.forEach(u => {
+          const isOnline = !!onlineMap[u.id];
           const el = document.createElement('div');
           el.className = 'list-item';
-          el.innerHTML = `<div><strong>${u.alias}</strong> <span class="muted">(${u.role})</span></div>
+          el.innerHTML = `<div><strong>${u.alias}</strong> ${onlineDotHTML(isOnline)} <div class="muted">(${u.role})</div></div>
                           <div class="row small">
                             <button class="btn tiny" data-id="${u.id}">Chat</button>
                           </div>`;
@@ -122,6 +129,7 @@
       await loadMessages();
     }
 
+    // load messages via REST (history) then rely on socket for realtime
     async function loadMessages(){
       if (!selectedPerson) {
         document.getElementById('chatWindow').innerHTML = '<div class="muted">Select someone to chat</div>';
@@ -136,11 +144,7 @@
         cw.innerHTML = '';
         data.messages.forEach(m=>{
           const me = (m.sender_id === myId);
-          const b = document.createElement('div');
-          b.className = 'bubble ' + (me? 'me' : 'them');
-          b.innerHTML = `<div class="small muted">${me? 'You' : selectedPerson.alias} • ${m.timestamp}</div>
-                         <div>${m.content}</div>`;
-          cw.appendChild(b);
+          appendMessageToWindow(m, me);
         });
         cw.scrollTop = cw.scrollHeight;
       } catch (err) {
@@ -148,33 +152,95 @@
       }
     }
 
-    // send message
+    function appendMessageToWindow(m, me){
+      const cw = document.getElementById('chatWindow');
+      const b = document.createElement('div');
+      b.className = 'bubble ' + (me? 'me' : 'them');
+      // show timestamp if provided
+      const ts = m.timestamp || new Date().toISOString().replace('T',' ').split('.')[0];
+      b.innerHTML = `<div class="small muted">${me? 'You' : (selectedPerson? selectedPerson.alias : 'Them')} • ${ts}</div>
+                     <div>${m.content}</div>`;
+      cw.appendChild(b);
+      cw.scrollTop = cw.scrollHeight;
+    }
+
+    // SOCKET: init and handlers
+    (async function(){
+      await SocketClient.init(() => {
+        // after socket connected, announce this user
+        SocketClient.emit("user_connected", { user_id: myId, role: current.role });
+      });
+
+      // listen to incoming messages
+      SocketClient.on("receive_message", (data) => {
+        // if message belongs to current open chat, append
+        const otherId = (data.sender_id === myId) ? data.receiver_id : data.sender_id;
+        // if currently viewing that person, show live
+        if (selectedPerson && (selectedPerson.id === otherId)) {
+          const me = (data.sender_id === myId);
+          appendMessageToWindow({
+            content: data.content,
+            timestamp: new Date().toISOString().replace('T',' ').split('.')[0]
+          }, me);
+        } else {
+          // otherwise you may show a notification or mark unread - keep simple: alert small
+          // you can implement unread badges later
+          console.log("message for", otherId, data.content);
+        }
+      });
+
+      // online/offline handlers
+      SocketClient.on("user_online", (d) => {
+        onlineMap[d.user_id] = true;
+        loadUsers(); // refresh UI to show dot
+      });
+      SocketClient.on("user_offline", (d) => {
+        delete onlineMap[d.user_id];
+        loadUsers();
+      });
+      SocketClient.on("online_list", (d) => {
+        (d.online || []).forEach(uid => onlineMap[uid] = true);
+        loadUsers();
+      });
+
+      // initial load
+      await loadUsers();
+      await loadMyAppointments();
+    })();
+
+    // send message via socket (fallback to REST if needed)
     document.getElementById('msgForm').addEventListener('submit', async (e)=>{
       e.preventDefault();
       const txt = document.getElementById('msgInput').value.trim();
       if (!txt || !selectedPerson) return;
-      // decide is_peer_support: true if chatting with user, false if with counselor
-      const isPeer = (selectedPerson.role !== 'counselor');
-      try {
-        const res = await fetch(`${API_BASE}/messages`, {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            sender_id: myId,
-            receiver_id: selectedPerson.id,
-            content: txt,
-            is_peer_support: isPeer ? 1 : 0
-          })
-        });
-        const j = await res.json();
-        if (!res.ok) {
-          alert(j.message || j.error || 'Failed to send');
-          return;
+      const payload = {
+        sender_id: myId,
+        receiver_id: selectedPerson.id,
+        content: txt,
+        is_peer_support: (selectedPerson.role !== 'counselor')? 1 : 0
+      };
+
+      // optimistic UI
+      appendMessageToWindow({ content: txt, timestamp: new Date().toISOString().replace('T',' ').split('.')[0] }, true);
+      document.getElementById('msgInput').value = '';
+
+      if (SocketClient.isConnected()) {
+        SocketClient.emit("send_message", payload);
+      } else {
+        // fallback: POST to REST endpoint
+        try {
+          const res = await fetch(`${API_BASE}/messages`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          const j = await res.json();
+          if (!res.ok) {
+            alert(j.message || j.error || 'Failed to send');
+          }
+        } catch (err) {
+          alert('Network error: ' + err.message);
         }
-        document.getElementById('msgInput').value = '';
-        await loadMessages();
-      } catch (err) {
-        alert('Network error: ' + err.message);
       }
     });
 
@@ -229,14 +295,6 @@
         apptMsg.textContent = 'Network error';
       }
     });
-
-    // initial load
-    (async ()=>{
-      await loadUsers();
-      await loadMyAppointments();
-      // optionally select first counselor for quick chat
-    })();
-
   </script>
 </body>
 </html>

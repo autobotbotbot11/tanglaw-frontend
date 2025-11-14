@@ -51,7 +51,13 @@
 
     const studentsList = document.getElementById('studentsList');
     const apptsList = document.getElementById('apptsList');
+    const chatWindow = document.getElementById('chatWindow');
     let selected = null;
+    const onlineMap = {};
+
+    function onlineDotHTML(isOnline){
+      return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${isOnline? '#2ecc71' : '#4a5568'};margin-left:8px;"></span>`;
+    }
 
     async function loadStudents(){
       studentsList.innerHTML = 'Loading...';
@@ -62,9 +68,10 @@
         const students = data.users.filter(u => u.role === 'user');
         studentsList.innerHTML = '';
         students.forEach(s=>{
+          const isOnline = !!onlineMap[s.id];
           const el = document.createElement('div');
           el.className = 'list-item';
-          el.innerHTML = `<div><strong>${s.alias}</strong></div>
+          el.innerHTML = `<div><strong>${s.alias}</strong> ${onlineDotHTML(isOnline)}</div>
                           <div class="row small"><button class="btn tiny" data-id="${s.id}">Chat</button></div>`;
           studentsList.appendChild(el);
         });
@@ -78,7 +85,6 @@
       } catch (err) { studentsList.textContent = 'Network error'; }
     }
 
-    // load appointments for this counselor
     async function loadAppointments(){
       apptsList.innerHTML = 'Loading...';
       try {
@@ -90,7 +96,7 @@
         data.appointments.forEach(a=>{
           const node = document.createElement('div');
           node.className = 'list-item small';
-          node.innerHTML = `<div><strong>${a.user_username}</strong> • ${a.date} ${a.time}</div>
+          node.innerHTML = `<div><strong>${a.user_name}</strong> • ${a.date} ${a.time}</div>
                             <div class="muted small">status: ${a.status}</div>
                             <div class="row small">
                               <button class="btn tiny approve" data-id="${a.id}">Approve</button>
@@ -120,8 +126,17 @@
       } catch (err) { alert('Network error'); }
     }
 
-    // chat logic (same as user but reversed)
-    const chatWindow = document.getElementById('chatWindow');
+    function appendMessageToWindow(m, me){
+      const cw = document.getElementById('chatWindow');
+      const b = document.createElement('div');
+      b.className = 'bubble ' + (me? 'me' : 'them');
+      const ts = m.timestamp || new Date().toISOString().replace('T',' ').split('.')[0];
+      b.innerHTML = `<div class="small muted">${me? 'You' : (selected? selected.alias : 'Them')} • ${ts}</div>
+                     <div>${m.content}</div>`;
+      cw.appendChild(b);
+      cw.scrollTop = cw.scrollHeight;
+    }
+
     function selectPerson(u){
       selected = u;
       document.getElementById('chatWith').textContent = `Chat with ${u.alias}`;
@@ -140,45 +155,80 @@
         chatWindow.innerHTML = '';
         data.messages.forEach(m=>{
           const me = (m.sender_id === current.id);
-          const b = document.createElement('div');
-          b.className = 'bubble ' + (me? 'me' : 'them');
-          b.innerHTML = `<div class="small muted">${me? 'You' : selected.alias} • ${m.timestamp}</div>
-                         <div>${m.content}</div>`;
-          chatWindow.appendChild(b);
+          appendMessageToWindow(m, me);
         });
-        chatWindow.scrollTop = chatWindow.scrollHeight;
       } catch (err) {
         chatWindow.innerHTML = 'Network error';
       }
     }
 
+    // Socket init
+    (async function(){
+      await SocketClient.init(() => {
+        SocketClient.emit("user_connected", { user_id: current.id, role: current.role });
+      });
+
+      SocketClient.on("receive_message", (data) => {
+        const otherId = (data.sender_id === current.id) ? data.receiver_id : data.sender_id;
+        if (selected && selected.id === otherId) {
+          const me = (data.sender_id === current.id);
+          appendMessageToWindow({
+            content: data.content,
+            timestamp: new Date().toISOString().replace('T',' ').split('.')[0]
+          }, me);
+        } else {
+          console.log("received message for", otherId, data.content);
+        }
+      });
+
+      SocketClient.on("user_online", (d) => {
+        onlineMap[d.user_id] = true;
+        loadStudents();
+      });
+      SocketClient.on("user_offline", (d) => {
+        delete onlineMap[d.user_id];
+        loadStudents();
+      });
+      SocketClient.on("online_list", (d) => {
+        (d.online || []).forEach(uid => onlineMap[uid] = true);
+        loadStudents();
+      });
+
+      // initial loads
+      await loadStudents();
+      await loadAppointments();
+    })();
+
+    // send message
     document.getElementById('msgForm').addEventListener('submit', async (e)=>{
       e.preventDefault();
       const txt = document.getElementById('msgInput').value.trim();
       if (!txt || !selected) return;
-      try {
-        const res = await fetch(`${API_BASE}/messages`, {
-          method:'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            sender_id: current.id,
-            receiver_id: selected.id,
-            content: txt,
-            is_peer_support: 0
-          })
-        });
-        const j = await res.json();
-        if (!res.ok) { alert(j.message || j.error || 'Failed'); return; }
-        document.getElementById('msgInput').value = '';
-        loadMessages();
-      } catch (err) { alert('Network error'); }
-    });
+      // optimistic UI
+      appendMessageToWindow({ content: txt, timestamp: new Date().toISOString().replace('T',' ').split('.')[0] }, true);
+      document.getElementById('msgInput').value = '';
 
-    // init
-    (async ()=>{
-      await loadStudents();
-      await loadAppointments();
-    })();
+      const payload = {
+        sender_id: current.id,
+        receiver_id: selected.id,
+        content: txt,
+        is_peer_support: 0
+      };
+      if (SocketClient.isConnected()) {
+        SocketClient.emit("send_message", payload);
+      } else {
+        // fallback REST
+        try {
+          const res = await fetch(`${API_BASE}/messages`, {
+            method:'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          const j = await res.json();
+          if (!res.ok) alert(j.message || j.error || 'Failed');
+        } catch (err) { alert('Network error'); }
+      }
+    });
   </script>
 </body>
 </html>
